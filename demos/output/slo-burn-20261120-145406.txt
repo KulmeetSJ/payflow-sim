@@ -1,0 +1,27 @@
+09:24:08 # SLO burn demo: load 20/s, fault rate 0.6 per processing attempt
+09:26:08 baseline done: burn 5m=0.0000x 1h=28.7096x, alert=inactive
+09:26:08 FAULT ON
+09:27:39   alert pending after 91s (burn 5m=14.9683x 1h=30.2095x)
+09:29:41   alert FIRING after 212s (burn 5m=40.2313x 1h=33.6168x)
+09:29:41   in Alertmanager after 213s, routed to receiver: page
+09:29:46 FAULT OFF (fixed)
+09:35:10   alert resolved 324s after the fix (burn 5m=0.0000x 1h=33.4673x)
+09:35:10   latency SLO error budget left (28d window): -32.4673
+trace 29baddf1f506d1035019ae1d5eab52e7: 16 spans, services: ['payment-gateway', 'payment-processor']
+  +     0.0 ms      7.1 ms  payment-gateway    server    POST /payments
+  +     0.2 ms      6.7 ms  payment-gateway    producer  payments.initiated publish
+  +    91.9 ms    201.7 ms  payment-processor  consumer  payments.initiated process
+  +   497.8 ms    210.5 ms  payment-processor  consumer  payments.initiated process
+  +  1149.9 ms     15.1 ms  payment-processor  consumer  payments.initiated process
+  +  1153.0 ms     11.4 ms  payment-processor  producer  payments.initiated-retry-1000 publish
+  +  1164.2 ms      0.8 ms  payment-processor  consumer  payments.initiated-retry-1000 process
+  +  2169.6 ms      5.2 ms  payment-processor  consumer  payments.initiated-retry-1000 process
+  +  2170.1 ms      0.3 ms  payment-processor  client    payflow
+  +  2170.5 ms      1.3 ms  payment-processor  client    INSERT payflow.processed_events
+  +  2171.9 ms      0.2 ms  payment-processor  client    SELECT payflow.accounts
+  +  2172.2 ms      0.6 ms  payment-processor  client    INSERT payflow.payments
+  +  2172.9 ms      1.1 ms  payment-processor  client    INSERT payflow.ledger_entries
+  +  2173.9 ms      0.1 ms  payment-processor  client    INSERT payflow.ledger_entries
+  +  2174.1 ms      0.1 ms  payment-processor  client    UPDATE payflow.accounts
+  +  2174.2 ms      0.1 ms  payment-processor  client    UPDATE payflow.accounts
+09:35:10 saved to demos/output/slo-burn-20261120-145406.txt

@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+
+rule_files: [/etc/prometheus/rules/*.yml]
+
+alerting:
+  alertmanagers:
+    - static_configs: [{ targets: ["alertmanager:9093"] }]
+
+scrape_configs:
+  - job_name: payment-gateway
+    metrics_path: /actuator/prometheus
+    static_configs: [{ targets: ["payment-gateway:8080"] }]
+
+  # Docker's DNS returns one A record per replica, so scaled processors are all scraped.
+  - job_name: payment-processor
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [payment-processor]
+        type: A
+        port: 8081
+        refresh_interval: 10s
+
+  - job_name: kafka-exporter
+    static_configs: [{ targets: ["kafka-exporter:9308"] }]
+
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]

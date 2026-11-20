@@ -44,7 +44,7 @@ flowchart LR
 | Business-rule failures are visible, not lost | Currency mismatch, unknown account, over the limit, insufficient funds → payment row `REJECTED` with a reason, and no ledger entries |
 
 ## Run it
-Requires Docker (about 3.5 GB of memory for the stack) and JDK 21 for the tests.
+Requires Docker (about 5 GB of memory for the stack including observability) and JDK 21 for the tests.
 ```bash
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" > .env   # gitignored; generated per machine
 docker compose up -d --build        # 3 Kafka brokers, PostgreSQL, gateway (:8080), processor (:8081)
@@ -58,6 +58,11 @@ curl -s localhost:8081/payments/<paymentId>     # status, reject_reason, e2e_ms
 tools/generate.py --count 500 --rate 50         # synthetic load, ~2% deliberately invalid
 docker compose down -v
 ```
+| UI | URL |
+|---|---|
+| Grafana (dashboard, traces, logs) | http://localhost:3000 |
+| Prometheus (rules, alerts) | http://localhost:9090/alerts |
+| Alertmanager (routing) | http://localhost:9093 |
 Accounts `ACC-000001`…`ACC-001000` are seeded with 100,000.00 each. The currency is GBP when n % 3 = 0, EUR when n % 3 = 1, and USD when n % 3 = 2.
 
 ## Partitioning and ordering
@@ -112,17 +117,64 @@ ledger net 0.00 · balances per currency unchanged · redeliveries skipped by de
 - **One redelivery, absorbed.** In the run shown, one event was redelivered around a rebalance (processed, but its offset not yet committed when the partition moved). Dedupe skipped it. An earlier run had none.
 - Kafka 4 also offers the new consumer group protocol (KIP-848, `group.protocol=consumer`), where the broker computes assignments incrementally. I stayed on the classic protocol + cooperative-sticky because it is what most production clusters still run.
 
+## Observability and SLOs
+
+![PayFlow Sim dashboard during the SLO burn demo](docs/img/dashboard.png)
+*Two forced spikes (fault injection on 60% of processing attempts). The latency burn rate crosses the 14.4× page line, then the page clears while the slow-burn ticket stays open, because its 30 m window still contains the spike.*
+
+```mermaid
+flowchart LR
+  apps["gateway + processors<br/>OTel Java agent"] -->|"OTLP traces + logs"| col[OTel Collector]
+  col --> tempo[(Tempo)]
+  col --> loki[(Loki)]
+  apps -->|"/actuator/prometheus"| prom[(Prometheus)]
+  kexp[kafka-exporter] -->|consumer lag| prom
+  prom -->|"SLO rules,<br/>burn-rate alerts"| am[Alertmanager]
+  tempo & loki & prom --> graf[Grafana]
+```
+
+- **Traces with no tracing code.** The OpenTelemetry Java agent (checksum-pinned in the [Dockerfile](Dockerfile)) instruments Spring MVC, the Kafka producer and consumer, and JDBC, and it carries the trace context in Kafka headers. One trace covers the whole path:
+  ```
+  +  0.0 ms  11.3 ms  payment-gateway    server    POST /payments
+  +  1.4 ms   8.4 ms  payment-gateway    producer  payments.initiated publish     <- acks=all: most of the HTTP time
+  + 10.3 ms   3.6 ms  payment-processor  consumer  payments.initiated process
+  + 10.9 ms   0.3 ms  payment-processor  client    INSERT payflow.processed_events
+  + 11.4 ms   0.4 ms  payment-processor  client    SELECT payflow.accounts
+  + 12.4 ms   0.2 ms  payment-processor  client    INSERT payflow.payments
+  ...                                              2 ledger INSERTs, 2 balance UPDATEs
+  ```
+  A retried payment shows each attempt: three in-place tries ~0.5 s apart, the hop to `payments.initiated-retry-1000`, and the successful commit at 2.17 s ([full trace](demos/output/)).
+- **Logs:** JSON on stdout (Spring Boot structured logging, ECS) with `trace_id`/`span_id`, and also shipped via OTLP to Loki. Grafana links each log line to its trace and each span to its logs.
+- **SLI metrics** ([`PaymentMetrics`](payment-processor/src/main/java/dev/demo/payflow/processor/PaymentMetrics.java)): `payments_processed_total{outcome}`, `payment_e2e_latency_seconds` (accept → commit, with an exact 2 s bucket), `payments_dead_lettered_total{kind}`. Consumer lag comes from kafka-exporter on the broker side, so it still reports when every consumer is down.
+- **SLOs** ([docs/slo.md](docs/slo.md)): 99% of payments committed within 2 s; 99.9% of valid payments processed without being dead-lettered. Multi-window, multi-burn-rate alerts: **page** at 14.4× over 1 h and 5 m, **ticket** at 6× over 6 h and 30 m. The design choices, error budget policy and alert response steps are in the doc.
+- **Alert rules are tested code.** `promtool test rules` runs in CI with 6 scenarios: exactly-on-budget traffic stays quiet, a 30× burn pages, an 8× burn only raises a ticket, a spike that has ended clears the page within minutes, dead letters page the success SLO, and poison messages raise only their own ticket.
+
+### Forced error spike → page ([`demos/slo-burn.sh`](demos/slo-burn.sh), [output](demos/output/))
+| | Result |
+|---|---|
+| Load / fault | ~20 payments/s; transient faults on 60% of processing attempts |
+| Alert pending | 91 s after the fault started |
+| `PaymentLatencyBudgetFastBurn` firing | 212 s (pending + the 2 m `for`) |
+| Reached Alertmanager | 213 s, routed to the `page` receiver |
+| Resolved | 324 s after the fault was switched off, once the 5 m window had recovered |
+
+Notes from the runs:
+- **The burn rate hit ~40×, not the ~22× I predicted.** I expected only the ~22% of payments that fail all three in-place tries (0.6³) to miss the 2 s target. But in-place retries hold the partition, and with one listener thread for 6 partitions, throughput fell to a few payments per second against 20/s offered. Lag grew to ~400 per partition and *every* queued payment went slow. Head-of-line blocking was the real damage, and it is the cost of the order-preserving retry layer. It is also why Phase 4 will measure listener concurrency.
+- **The long window wasn't clean in the recorded run.** Docker Compose kept Prometheus' anonymous data volume when I recreated the container, so the 1 h window still held an earlier run's spike (1 h burn 28.7× at the end of the baseline), and the 5 m window was what triggered the alert. An earlier run with a clean 1 h window gave almost the same timings (pending 96 s, firing 217 s), because on a stack with only minutes of history the 1 h window behaves like a short one.
+- **"Error budget left: −3208%"** is correct and a little absurd: with ~25 minutes of history, a 4-minute incident is most of the traffic the 28-day window has seen. Budgets only mean something over real traffic volumes, and that's a good reason not to page on them directly.
+
 ## Tests
 `./mvnw verify` runs unit tests and integration tests against **real Kafka and PostgreSQL** (Testcontainers):
 - **Gateway:** an accepted payment lands on the topic keyed by account; a retry with the same key returns the same id; a missing or bad key and an invalid body get 400.
 - **Processor:** a valid payment gets a balanced ledger and moves both balances; a currency mismatch is `REJECTED` with no ledger entries; the same event delivered 3× is booked once; 20 payments from one account are committed in send order.
 - **Retries and DLT:** a fault that outlasts the blocking retries is booked from a retry topic exactly once; a permanent fault ends in the DLT after 4 attempts, then replay books it and a second replay changes nothing; malformed JSON and a tampered `eventId` reach the DLT on attempt 1 without blocking the partition.
 - **Rules:** a table of 10 business-rule cases.
+- **SLO alert rules:** 6 `promtool` scenarios (above).
 
 ## Roadmap
 - [x] **Phase 1:** core flow, 3-broker KRaft cluster, idempotent producer and consumer, Testcontainers, CI
 - [x] **Phase 2:** blocking + non-blocking retries, DLT with inspector and replay, consumer-group scaling demo (1→3→6→7→3), cooperative-sticky assignor
-- [ ] **Phase 3:** OpenTelemetry traces across Kafka, RED + lag dashboards, SLOs with multi-window burn-rate alerts
+- [x] **Phase 3:** OpenTelemetry traces across Kafka, JSON logs in Loki linked to traces, RED + lag + SLO dashboard, multi-window burn-rate alerts (tested with promtool)
 - [ ] **Phase 4:** k6 load test, chaos (broker kill, consumer kill, DB latency), blameless postmortem
 
 ## License

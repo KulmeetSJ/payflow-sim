@@ -44,6 +44,9 @@ class PaymentFlowIT {
 	@Autowired
 	JdbcClient db;
 
+	@Autowired
+	io.micrometer.core.instrument.MeterRegistry meters;
+
 	static final Duration WAIT = Duration.ofSeconds(20);
 
 	PaymentInitiated send(String key, String from, String to, String amount, String ccy) throws Exception {
@@ -74,6 +77,10 @@ class PaymentFlowIT {
 				SELECT sum(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END)
 				FROM ledger_entries WHERE payment_id = ?""").param(p.eventId()).query(BigDecimal.class).single();
 		assertThat(net).isEqualByComparingTo("0");
+
+		// SLI metrics are recorded after the commit
+		assertThat(meters.get("payments.processed").tag("outcome", "completed").counter().count()).isPositive();
+		assertThat(meters.get("payment.e2e.latency").timer().count()).isPositive();
 	}
 
 	@Test

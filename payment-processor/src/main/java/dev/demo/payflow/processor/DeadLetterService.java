@@ -43,7 +43,10 @@ class DeadLetterService {
 
 	private final JsonMapper json;
 
-	DeadLetterService(JdbcClient db, KafkaTemplate<String, String> kafka, JsonMapper json) {
+	private final PaymentMetrics metrics;
+
+	DeadLetterService(JdbcClient db, KafkaTemplate<String, String> kafka, JsonMapper json, PaymentMetrics metrics) {
+		this.metrics = metrics;
 		this.db = db;
 		this.kafka = kafka;
 		this.json = json;
@@ -72,6 +75,7 @@ class DeadLetterService {
 					header(rec, KafkaHeaders.EXCEPTION_STACKTRACE, KafkaHeaders.DLT_EXCEPTION_STACKTRACE))
 			.update();
 		if (inserted == 1) {
+			metrics.deadLettered(exception);
 			log.warn("dead letter {}-{}@{} key={} exception={}", rec.topic(), rec.partition(), rec.offset(), rec.key(),
 					exception);
 		}

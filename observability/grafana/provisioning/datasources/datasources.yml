@@ -1,0 +1,35 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prom
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData: { timeInterval: 10s }
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    url: http://tempo:3200
+    jsonData:
+      # span -> the log lines written while it was active
+      tracesToLogsV2:
+        datasourceUid: loki
+        customQuery: true
+        query: '{service_name="${__span.tags["service.name"]}"} | trace_id="${__trace.traceId}"'
+      serviceMap: { datasourceUid: prom }
+      nodeGraph: { enabled: true }
+
+  - name: Loki
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      # log line -> its trace (trace_id is OTLP structured metadata)
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          url: '${__value.raw}'
+          urlDisplayLabel: View trace

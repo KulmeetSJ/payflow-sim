@@ -41,3 +41,7 @@ server:
 management:
   endpoints.web.exposure.include: health,info,prometheus
   endpoint.health.probes.enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true   # real buckets, so p95/p99 can be aggregated across instances

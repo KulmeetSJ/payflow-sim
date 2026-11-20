@@ -1,0 +1,16 @@
+# Routing only (no real notification channels in a local demo): severity=page and severity=ticket
+# go to different receivers, which is the part the SLO alerting design depends on.
+route:
+  receiver: ticket
+  group_by: [alertname, slo]
+  group_wait: 10s
+  routes:
+    - matchers: [severity="page"]
+      receiver: page
+      repeat_interval: 1h
+    - matchers: [severity="ticket"]
+      receiver: ticket
+      repeat_interval: 12h
+receivers:
+  - name: page      # would be PagerDuty / Opsgenie
+  - name: ticket    # would be a Jira / ServiceNow webhook

@@ -1,0 +1,112 @@
+# promtool test rules tests/slo_test.yml  (run in CI)
+# Synthetic traffic: 100 payments/min. "bad" = committed later than 2 s, or dead-lettered.
+rule_files: [../rules/slo.yml]
+evaluation_interval: 1m
+
+tests:
+  # 1% slow payments = exactly the budget, burn rate 1x: nothing fires
+  - interval: 1m
+    input_series:
+      - series: payment_e2e_latency_seconds_count
+        values: 0+100x400
+      - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
+        values: 0+99x400
+    alert_rule_test:
+      - { eval_time: 6h, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }
+      - { eval_time: 6h, alertname: PaymentLatencyBudgetSlowBurn, exp_alerts: [] }
+
+  # 30% slow from the start (burn 30x): page after the 2 m "for"
+  - interval: 1m
+    input_series:
+      - series: payment_e2e_latency_seconds_count
+        values: 0+100x60
+      - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
+        values: 0+70x60
+    alert_rule_test:
+      - { eval_time: 2m, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }   # pending, not yet firing
+      - eval_time: 10m
+        alertname: PaymentLatencyBudgetFastBurn
+        exp_alerts:
+          - exp_labels: { severity: page, slo: payment-latency }
+            exp_annotations:
+              summary: Payment latency SLO is burning its error budget at more than 14.4x
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+
+  # 8% slow (burn 8x): above the ticket threshold, below the page threshold
+  - interval: 1m
+    input_series:
+      - series: payment_e2e_latency_seconds_count
+        values: 0+100x120
+      - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
+        values: 0+92x120
+    alert_rule_test:
+      - { eval_time: 60m, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }
+      - eval_time: 60m
+        alertname: PaymentLatencyBudgetSlowBurn
+        exp_alerts:
+          - exp_labels: { severity: ticket, slo: payment-latency }
+            exp_annotations:
+              summary: Payment latency SLO is burning its error budget at more than 6x
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+
+  # A 30% spike that has already ended: the 1h window is still high, but the 5m window has
+  # recovered, so the page clears quickly (this is why there are two windows).
+  - interval: 1m
+    input_series:
+      - series: payment_e2e_latency_seconds_count
+        values: 0+100x60
+      - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
+        values: 0+70x30 2100+100x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PaymentLatencyBudgetFastBurn
+        exp_alerts:
+          - exp_labels: { severity: page, slo: payment-latency }
+            exp_annotations:
+              summary: Payment latency SLO is burning its error budget at more than 14.4x
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - { eval_time: 40m, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }
+
+  # 2 of every 102 valid payments dead-lettered (~2%, burn ~20x vs a 0.1% budget): page.
+  # Poison messages do not count against the success SLO; they raise a separate ticket.
+  - interval: 1m
+    input_series:
+      - series: 'payments_processed_total{outcome="completed"}'
+        values: 0+95x60
+      - series: 'payments_processed_total{outcome="rejected"}'
+        values: 0+5x60
+      - series: 'payments_processed_total{outcome="duplicate"}'
+        values: 0+50x60
+      - series: 'payments_dead_lettered_total{kind="exhausted"}'
+        values: 0+2x60
+      - series: 'payments_dead_lettered_total{kind="poison"}'
+        values: 0+1x60
+    promql_expr_test:
+      - expr: slo:payment_success:error_ratio_rate5m
+        eval_time: 30m
+        exp_samples: [{ labels: 'slo:payment_success:error_ratio_rate5m', value: 0.0196078431372549 }]
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentSuccessBudgetFastBurn
+        exp_alerts:
+          - exp_labels: { severity: page, slo: payment-success }
+            exp_annotations:
+              summary: Payments are being dead-lettered fast enough to burn the success SLO at more than 14.4x
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - eval_time: 10m
+        alertname: PoisonMessagesDeadLettered
+        exp_alerts:
+          - exp_labels: { severity: ticket }
+            exp_annotations:
+              summary: Malformed or invalid events reached the DLT; a producer may be sending bad data
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+
+  # Healthy success SLI: 0 exhausted dead letters -> no page even with poison messages around
+  - interval: 1m
+    input_series:
+      - series: 'payments_processed_total{outcome="completed"}'
+        values: 0+100x60
+      - series: 'payments_dead_lettered_total{kind="exhausted"}'
+        values: 0+0x60
+    alert_rule_test:
+      - { eval_time: 30m, alertname: PaymentSuccessBudgetFastBurn, exp_alerts: [] }

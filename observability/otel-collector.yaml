@@ -1,0 +1,23 @@
+# Apps -> collector (OTLP) -> Tempo (traces) and Loki (logs). The collector is where sampling,
+# redaction or routing would go in a real system; here it batches and protects itself.
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+processors:
+  memory_limiter: { check_interval: 1s, limit_mib: 200, spike_limit_mib: 50 }
+  batch: {}
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    traces: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_grpc/tempo] }
+    logs:   { receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/loki] }

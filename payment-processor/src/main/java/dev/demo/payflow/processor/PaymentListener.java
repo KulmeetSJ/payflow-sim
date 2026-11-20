@@ -26,7 +26,11 @@ class PaymentListener {
 
 	private final JsonMapper json;
 
-	PaymentListener(PaymentService service, DeadLetterService deadLetters, FaultInjector faults, JsonMapper json) {
+	private final PaymentMetrics metrics;
+
+	PaymentListener(PaymentService service, DeadLetterService deadLetters, FaultInjector faults, JsonMapper json,
+			PaymentMetrics metrics) {
+		this.metrics = metrics;
 		this.service = service;
 		this.deadLetters = deadLetters;
 		this.faults = faults;
@@ -51,7 +55,8 @@ class PaymentListener {
 		PaymentInitiated p = json.readValue(rec.value(), PaymentInitiated.class);
 		EventValidator.validate(p);
 		faults.maybeFail(p);
-		service.process(p, rec.partition(), rec.offset(), attempt(rec));
+		var outcome = service.process(p, rec.partition(), rec.offset(), attempt(rec));
+		metrics.processed(outcome, p.acceptedAt()); // after the commit: the transaction ended with process()
 		ack.acknowledge();
 	}
 

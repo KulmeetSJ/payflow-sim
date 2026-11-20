@@ -1,0 +1,86 @@
+# SLOs for PayFlow Sim (docs/slo.md). Multi-window, multi-burn-rate alerts, SRE Workbook ch. 5:
+#   page:   burn rate 14.4x over 1h AND 5m  (2% of a 28-day budget gone in 1 hour)
+#   ticket: burn rate 6x    over 6h AND 30m (5% of the budget gone in 6 hours)
+# The long window proves the burn is significant; the short window makes the alert reset quickly
+# once the problem is fixed.
+#
+# Latency SLO: 99% of payments committed within 2 s of acceptance -> error budget 1%
+# Success SLO: 99.9% of valid payments processed without being dead-lettered -> budget 0.1%
+groups:
+  - name: slo-latency-sli
+    rules:
+      - record: slo:payment_latency:error_ratio_rate5m
+        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[5m])) / sum(rate(payment_e2e_latency_seconds_count[5m])))
+      - record: slo:payment_latency:error_ratio_rate30m
+        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[30m])) / sum(rate(payment_e2e_latency_seconds_count[30m])))
+      - record: slo:payment_latency:error_ratio_rate1h
+        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[1h])) / sum(rate(payment_e2e_latency_seconds_count[1h])))
+      - record: slo:payment_latency:error_ratio_rate6h
+        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[6h])) / sum(rate(payment_e2e_latency_seconds_count[6h])))
+      - record: slo:payment_latency:error_ratio_rate28d
+        expr: 1 - (sum(increase(payment_e2e_latency_seconds_bucket{le="2.0"}[28d])) / sum(increase(payment_e2e_latency_seconds_count[28d])))
+      - record: slo:payment_latency:error_budget_remaining
+        expr: 1 - slo:payment_latency:error_ratio_rate28d / 0.01
+
+  - name: slo-success-sli
+    rules:
+      - record: slo:payment_success:error_ratio_rate5m
+        expr: sum(rate(payments_dead_lettered_total{kind="exhausted"}[5m])) / (sum(rate(payments_processed_total{outcome=~"completed|rejected"}[5m])) + sum(rate(payments_dead_lettered_total{kind="exhausted"}[5m])))
+      - record: slo:payment_success:error_ratio_rate30m
+        expr: sum(rate(payments_dead_lettered_total{kind="exhausted"}[30m])) / (sum(rate(payments_processed_total{outcome=~"completed|rejected"}[30m])) + sum(rate(payments_dead_lettered_total{kind="exhausted"}[30m])))
+      - record: slo:payment_success:error_ratio_rate1h
+        expr: sum(rate(payments_dead_lettered_total{kind="exhausted"}[1h])) / (sum(rate(payments_processed_total{outcome=~"completed|rejected"}[1h])) + sum(rate(payments_dead_lettered_total{kind="exhausted"}[1h])))
+      - record: slo:payment_success:error_ratio_rate6h
+        expr: sum(rate(payments_dead_lettered_total{kind="exhausted"}[6h])) / (sum(rate(payments_processed_total{outcome=~"completed|rejected"}[6h])) + sum(rate(payments_dead_lettered_total{kind="exhausted"}[6h])))
+      - record: slo:payment_success:error_ratio_rate28d
+        expr: sum(increase(payments_dead_lettered_total{kind="exhausted"}[28d])) / (sum(increase(payments_processed_total{outcome=~"completed|rejected"}[28d])) + sum(increase(payments_dead_lettered_total{kind="exhausted"}[28d])))
+      - record: slo:payment_success:error_budget_remaining
+        expr: 1 - slo:payment_success:error_ratio_rate28d / 0.001
+
+  - name: slo-alerts
+    rules:
+      - alert: PaymentLatencyBudgetFastBurn
+        expr: slo:payment_latency:error_ratio_rate1h > (14.4 * 0.01) and slo:payment_latency:error_ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels: { severity: page, slo: payment-latency }
+        annotations:
+          summary: Payment latency SLO is burning its error budget at more than 14.4x
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - alert: PaymentLatencyBudgetSlowBurn
+        expr: slo:payment_latency:error_ratio_rate6h > (6 * 0.01) and slo:payment_latency:error_ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels: { severity: ticket, slo: payment-latency }
+        annotations:
+          summary: Payment latency SLO is burning its error budget at more than 6x
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - alert: PaymentSuccessBudgetFastBurn
+        expr: slo:payment_success:error_ratio_rate1h > (14.4 * 0.001) and slo:payment_success:error_ratio_rate5m > (14.4 * 0.001)
+        for: 2m
+        labels: { severity: page, slo: payment-success }
+        annotations:
+          summary: Payments are being dead-lettered fast enough to burn the success SLO at more than 14.4x
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - alert: PaymentSuccessBudgetSlowBurn
+        expr: slo:payment_success:error_ratio_rate6h > (6 * 0.001) and slo:payment_success:error_ratio_rate30m > (6 * 0.001)
+        for: 15m
+        labels: { severity: ticket, slo: payment-success }
+        annotations:
+          summary: Payments are being dead-lettered fast enough to burn the success SLO at more than 6x
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+
+  # Cause-based signals. Tickets, not pages: they explain an SLO burn rather than define one.
+  - name: payflow-causes
+    rules:
+      - alert: PoisonMessagesDeadLettered
+        expr: sum(increase(payments_dead_lettered_total{kind="poison"}[15m])) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: Malformed or invalid events reached the DLT; a producer may be sending bad data
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
+      - alert: PaymentConsumerLagGrowing
+        expr: sum(kafka_consumergroup_lag{consumergroup="payment-processor", topic="payments.initiated"}) > 1000 and deriv(sum(kafka_consumergroup_lag{consumergroup="payment-processor", topic="payments.initiated"})[10m:1m]) > 0
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: payment-processor lag is above 1000 and still growing
+          runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts

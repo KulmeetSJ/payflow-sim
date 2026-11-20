@@ -30,6 +30,17 @@ x-kafka-env: &kafka-env
   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
   KAFKA_HEAP_OPTS: -Xms384m -Xmx384m
 
+# Shared by both Spring services: OTel agent config + JSON logs.
+x-app-env: &app-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp          # logs go to Loki via the collector, with trace_id attached
+  OTEL_METRICS_EXPORTER: none       # metrics are scraped from /actuator/prometheus instead
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=local
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs   # JSON on stdout; trace_id/span_id come from the agent's MDC
+
 services:
   kafka-1:
     <<: *kafka
@@ -83,7 +94,8 @@ services:
     mem_limit: 512m
     ports: ["8080:8080"]
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      <<: *app-env
+      OTEL_SERVICE_NAME: payment-gateway
     depends_on:
       kafka-1: { condition: service_healthy }
       kafka-2: { condition: service_healthy }
@@ -96,11 +108,79 @@ services:
     mem_limit: 512m
     ports: ["8081-8087:8081"]   # a range, so the service can be scaled
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      <<: *app-env
+      OTEL_SERVICE_NAME: payment-processor
       DB_URL: jdbc:postgresql://postgres:5432/payflow
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
       ADMIN_ENDPOINTS_ENABLED: "true"   # DLT inspector + fault injection (local demo only)
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60   # 7 instances must fit on a laptop
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError   # 7 instances must fit on a laptop
     depends_on:
       postgres: { condition: service_healthy }
       payment-gateway: { condition: service_started }   # gateway creates the topic
+
+  # ---------------------------------------------------------------- observability
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro"]
+    depends_on: [tempo, loki]
+
+  tempo:
+    image: grafana/tempo:2.10.10
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes: ["./observability/tempo.yaml:/etc/tempo.yaml:ro"]
+    ports: ["3200:3200"]
+
+  loki:
+    image: grafana/loki:3.7.9
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes: ["./observability/loki.yaml:/etc/loki/loki.yaml:ro"]
+    ports: ["3100:3100"]
+
+  kafka-exporter:   # consumer lag measured from the broker side, so it still works when consumers are down
+    image: danielqsj/kafka-exporter:v1.11.0
+    restart: unless-stopped
+    mem_limit: 64m
+    command: ["--kafka.server=kafka-1:9092", "--kafka.server=kafka-2:9092", "--kafka.server=kafka-3:9092"]
+    depends_on:
+      kafka-1: { condition: service_healthy }
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    mem_limit: 512m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=3d
+      - --web.enable-lifecycle
+    volumes: ["./observability/prometheus:/etc/prometheus:ro"]
+    ports: ["9090:9090"]
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    restart: unless-stopped
+    mem_limit: 64m
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes: ["./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
+    ports: ["9093:9093"]
+
+  grafana:
+    image: grafana/grafana:13.2.5
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # local demo only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/payflow.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, tempo, loki]

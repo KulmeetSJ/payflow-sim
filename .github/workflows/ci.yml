@@ -32,3 +32,17 @@ jobs:
           name: test-reports
           path: "**/target/*-reports/"
           retention-days: 7
+
+  # SLO rules are code: syntax-checked and unit-tested (the burn-rate alerts must fire, and must not)
+  slo-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: promtool check + test
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/p" -w /p/tests --entrypoint promtool \
+            prom/prometheus:v3.15.1 check config /p/prometheus.yml --syntax-only
+          docker run --rm -v "$PWD/observability/prometheus:/p" -w /p/tests --entrypoint promtool \
+            prom/prometheus:v3.15.1 test rules slo_test.yml
+
