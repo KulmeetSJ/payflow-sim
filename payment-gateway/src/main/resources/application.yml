@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: payment-gateway
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      acks: all                 # leader waits for all in-sync replicas (>= min.insync.replicas)
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true            # broker drops producer-retry duplicates (per partition)
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 5000
+        linger.ms: 5
+  mvc:
+    problemdetails:
+      enabled: true
+
+payflow:
+  topic:
+    partitions: 6
+    replicas: ${TOPIC_REPLICAS:3}
+    min-insync-replicas: ${TOPIC_MIN_ISR:2}
+
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
