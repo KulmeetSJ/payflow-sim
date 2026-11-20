@@ -1,0 +1,48 @@
+# Consumer-group scaling demo, 2026-11-20T08:02:59Z
+# load: ~40/s via tools/generate.py; steps: 1 3 6 7 3; 30s per step
+# assignor: CooperativeStickyAssignor (classic group protocol)
+
+## 1 instance(s): group stable 5s after the scale command (settle wait 4s)
+    payment-processor-1              partitions: 0,1,2,3,4,5
+
+## 3 instance(s): group stable 17s after the scale command (settle wait 15s)
+    payment-processor-1              partitions: 0,1
+    payment-processor-2              partitions: 3,5
+    payment-processor-3              partitions: 2,4
+
+## 6 instance(s): group stable 19s after the scale command (settle wait 17s)
+    payment-processor-1              partitions: 0
+    payment-processor-2              partitions: 3
+    payment-processor-3              partitions: 2
+    payment-processor-4              partitions: 1
+    payment-processor-5              partitions: 4
+    payment-processor-6              partitions: 5
+
+## 7 instance(s): group stable 11s after the scale command (settle wait 9s)
+    payment-processor-1              partitions: 0
+    payment-processor-2              partitions: 3
+    payment-processor-3              partitions: 2
+    payment-processor-4              partitions: 1
+    payment-processor-5              partitions: 4
+    payment-processor-6              partitions: 5
+    payment-processor-7              partitions: (idle: no partitions)
+
+## 3 instance(s): group stable 5s after the scale command (settle wait 3s)
+    payment-processor-1              partitions: 0,5
+    payment-processor-2              partitions: 3,4
+    payment-processor-3              partitions: 1,2
+
+waiting for the generator to finish...
+## Invariants
+    generator:                      {"valid": 5884, "invalid": 116, "errors": 0, "last_payment_id": "de301987-4cfe-346c-8bde-c238598bac7e"}
+    accepted by gateway (202):      6000
+    reached a final state:          6000   (lost: 0)
+    completed without 2 ledger rows: 0
+    ledger net (credits - debits):   0.00
+    balances before: EUR=33400000.00 GBP=33300000.00 USD=33300000.00
+    balances after:  EUR=33400000.00 GBP=33300000.00 USD=33300000.00
+    new dead letters:                0
+    redeliveries skipped by dedupe:  1
+    group generations seen:          15
+
+saved to demos/output/consumer-scaling-20261120-133259.txt

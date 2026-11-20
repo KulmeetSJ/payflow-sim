@@ -99,6 +99,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       DB_URL: jdbc:postgresql://postgres:5432/payflow
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      ADMIN_ENDPOINTS_ENABLED: "true"   # DLT inspector + fault injection (local demo only)
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60   # 7 instances must fit on a laptop
     depends_on:
       postgres: { condition: service_healthy }
       payment-gateway: { condition: service_started }   # gateway creates the topic

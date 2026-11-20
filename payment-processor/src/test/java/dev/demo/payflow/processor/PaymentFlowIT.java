@@ -105,4 +105,32 @@ class PaymentFlowIT {
 			.query(Long.class).single()).isEqualTo(2);
 		assertThat(balance("ACC-000009")).isEqualByComparingTo(before.subtract(new BigDecimal("5.01")));
 	}
+
+	@Test
+	void paymentsFromOneAccountAreAppliedInSendOrder() throws Exception {
+		// key = fromAccount, so all 20 go to one partition and are consumed in offset order
+		String run = "it-order-" + UUID.randomUUID() + "-";
+		var sent = new java.util.ArrayList<PaymentInitiated>();
+		for (int i = 0; i < 20; i++) {
+			var p = PaymentInitiated.of(run + String.format("%02d", i), "ACC-000021", "ACC-000024",
+					new BigDecimal("1.00"), "GBP", Instant.now());
+			kafka.send(Topics.PAYMENTS_INITIATED, p.fromAccount(), json.writeValueAsString(p));
+			sent.add(p);
+		}
+		kafka.flush();
+		await().atMost(WAIT).until(() -> db.sql("SELECT count(*) FROM payments WHERE idempotency_key LIKE ?")
+			.param(run + "%").query(Long.class).single() == 20);
+
+		var rows = db.sql("""
+				SELECT idempotency_key, kafka_partition FROM payments WHERE idempotency_key LIKE ?
+				ORDER BY kafka_offset""").param(run + "%").query().listOfRows();
+		assertThat(rows).extracting(r -> r.get("kafka_partition")).containsOnly(rows.get(0).get("kafka_partition"));
+		assertThat(rows).extracting(r -> r.get("idempotency_key"))
+			.containsExactlyElementsOf(sent.stream().map(PaymentInitiated::idempotencyKey).toList());
+		// and the DB applied them in that order too (committed_at follows offset order)
+		var byCommit = db.sql("""
+				SELECT idempotency_key FROM payments WHERE idempotency_key LIKE ?
+				ORDER BY committed_at, kafka_offset""").param(run + "%").query(String.class).list();
+		assertThat(byCommit).containsExactlyElementsOf(sent.stream().map(PaymentInitiated::idempotencyKey).toList());
+	}
 }

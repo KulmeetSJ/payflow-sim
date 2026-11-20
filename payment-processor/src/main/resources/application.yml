@@ -18,9 +18,22 @@ spring:
       max-poll-records: 50
       properties:
         isolation.level: read_committed
+        # Incremental (cooperative) rebalancing: on scale-out only the partitions that move are
+        # revoked; everyone else keeps consuming. The default (RangeAssignor, eager) stops the whole group.
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
     listener:
       ack-mode: manual           # offset committed by the listener, after the DB transaction
       concurrency: ${LISTENER_CONCURRENCY:1}
+
+payflow:
+  topic:
+    partitions: 6          # retry topics get the same count as payments.initiated
+  retry:
+    attempts: 4            # main topic + 3 retry topics
+    initial-delay-ms: 1000
+    max-delay-ms: 10000
+  admin:
+    enabled: ${ADMIN_ENDPOINTS_ENABLED:false}
 
 server:
   port: ${SERVER_PORT:8081}

@@ -31,7 +31,7 @@ class PaymentService {
 	 * none of it does; the Kafka offset is committed only after this method returns.
 	 */
 	@Transactional
-	Outcome process(PaymentInitiated p, int partition, long offset) {
+	Outcome process(PaymentInitiated p, int partition, long offset, int attempt) {
 		int inserted = db.sql("INSERT INTO processed_events (event_id) VALUES (?) ON CONFLICT DO NOTHING")
 			.param(p.eventId())
 			.update();
@@ -52,7 +52,7 @@ class PaymentService {
 			.collect(Collectors.toMap(Account::accountId, Function.identity()));
 
 		Optional<String> reject = PaymentRules.check(p, accounts.get(p.fromAccount()), accounts.get(p.toAccount()));
-		insertPayment(p, reject.isPresent() ? "REJECTED" : "COMPLETED", reject.orElse(null), partition, offset);
+		insertPayment(p, reject.isPresent() ? "REJECTED" : "COMPLETED", reject.orElse(null), partition, offset, attempt);
 		if (reject.isPresent()) {
 			log.info("payment {} rejected: {}", p.eventId(), reject.get());
 			return Outcome.REJECTED;
@@ -72,14 +72,15 @@ class PaymentService {
 		return Outcome.COMPLETED;
 	}
 
-	private void insertPayment(PaymentInitiated p, String status, String reason, int partition, long offset) {
+	private void insertPayment(PaymentInitiated p, String status, String reason, int partition, long offset,
+			int attempt) {
 		db.sql("""
 				INSERT INTO payments (payment_id, idempotency_key, from_account, to_account, amount, currency,
-				                      status, reject_reason, accepted_at, kafka_partition, kafka_offset)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				                      status, reject_reason, accepted_at, kafka_partition, kafka_offset, delivery_attempt)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				""")
 			.params(p.eventId(), p.idempotencyKey(), p.fromAccount(), p.toAccount(), p.amount(), p.currency(), status,
-					reason, Timestamp.from(p.acceptedAt()), partition, offset)
+					reason, Timestamp.from(p.acceptedAt()), partition, offset, attempt)
 			.update();
 	}
 }

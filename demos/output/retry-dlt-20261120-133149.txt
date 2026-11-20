@@ -1,0 +1,17 @@
+# Retry + DLT demo, 2026-11-20T08:01:51Z
+# retries: 2 blocking (200 ms) per attempt, then retry topics 1 s / 2 s / 4 s, then payments.initiated-dlt
+
+1. fault x2 (absorbed by blocking retries):   COMPLETED delivery_attempt=1 e2e_ms=1874
+2. fault x3 (needs the first retry topic):    COMPLETED delivery_attempt=2 e2e_ms=2065
+3. fault never clears:                        dead letter 2 attempts=4 exception=dev.demo.payflow.processor.SimulatedTransientFault
+   booked before replay?                      no
+   fault cleared; replay -> HTTP 202
+   after replay:                              COMPLETED delivery_attempt=1 e2e_ms=13026
+   replay again -> HTTP 202
+   ledger rows for the payment (want 2):      2
+4. poison message:                            dead letter 3 attempts=1 exception=tools.jackson.core.exc.StreamReadException
+   replay -> HTTP 422 (422 = refused, still unparseable)
+   next payment on the same partition:        COMPLETED delivery_attempt=1 e2e_ms=11
+
+faults injected so far: {"rate":0.0,"remainingByPrefix":{"demo-dlt-1795161709":0,"demo-blip-1795161709":0,"demo-retry-1795161709":0},"injectedTotal":17}
+saved to demos/output/retry-dlt-20261120-133149.txt
