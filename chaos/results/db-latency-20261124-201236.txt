@@ -1,0 +1,27 @@
+14:42:37 # DB latency: +500ms on PostgreSQL responses, load 20/s, 3 processors
+14:42:37 load: 20/s for 100000s (run db-latency-201237)
+15:42:37 baseline: committed 20.1000/s, gateway 202s 20.0000/s p99 0.1118s, burn 5m=0.0000x 1h=0.0218x, alert=inactive
+15:42:37 TOXIC ON: +500ms
+15:43:38   +61s: committed 1.5000/s, lag 1148, gateway 202s 20.0000/s p99 0.0210s
+15:44:39   +122s: committed 1.5000/s, lag 2335, gateway 202s 20.0004/s p99 0.0154s
+15:45:40   +183s: committed 1.4804/s, lag 3388, gateway 202s 19.9844/s p99 0.0448s
+15:46:41   +244s: committed 1.4999/s, lag 4585, gateway 202s 20.0000/s p99 0.0185s
+15:47:42   +305s: committed 1.4600/s, lag 5635, gateway 202s 20.0000/s p99 0.0266s
+15:48:43   +366s: committed 1.5000/s, lag 6750, gateway 202s 20.0000/s p99 0.0193s
+15:49:44   +427s: committed 1.5000/s, lag 7850, gateway 202s 20.0000/s p99 0.0200s
+15:50:45   +488s: committed 1.5000/s, lag 8954, gateway 202s 20.0000/s p99 0.0184s
+15:51:46   +549s: committed 1.5001/s, lag 10104, gateway 202s 20.0020/s p99 0.0200s
+15:51:56   alert pending after 559s (burn 5m=100.0000x 1h=15.1406x)
+15:52:47   +610s: committed 1.4799/s, lag 11204, gateway 202s 19.9996/s p99 0.0184s
+15:53:48   +671s: committed 1.5000/s, lag 12454, gateway 202s 19.9995/s p99 0.0186s
+15:53:53   alert FIRING after 676s (burn 5m=100.0000x 1h=18.4860x)
+15:53:53   in Alertmanager after 676s, receiver: page
+15:54:59 before the fix: committed 1.5000/s, lag 13805, gateway 202s 19.9996/s p99 0.0146s; firing: PaymentConsumerLagGrowing PaymentLatencyBudgetFastBurn
+15:54:59 processor log lines mentioning max.poll / rebalance / Hikari timeouts: 0
+15:54:59 TOXIC OFF after 742s
+15:55:09   backlog drained 10s after the fix (peak catch-up rate ~93/s)
+15:59:22   PaymentLatencyBudgetFastBurn resolved 263s after the fix (burn 5m=13.9826x 1h=20.7228x)
+15:59:22   latency error budget left (28d): -15.2203
+15:59:27 reconcile: k6 got 202 for 92097, non-2xx/errors 0; payment rows for the run 92097 (lag drained 0s after load stopped)
+15:59:27 reconcile: lost 0, total balance 100000000.00 (expected 100000000.00), ledger debits 6278546.53 = credits 6278546.53
+15:59:27 saved to chaos/results/db-latency-20261124-201236.txt

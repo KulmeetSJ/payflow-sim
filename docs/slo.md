@@ -10,7 +10,7 @@ Two user-facing promises, measured where the user would feel them. Rules: [`obse
 |---|---|---|
 | **SLI** | Share of payments committed to the ledger **within 2 s** of the gateway accepting them | Share of **valid** payments processed (completed or rejected by a business rule) without being dead-lettered |
 | **Good events** | `payment_e2e_latency_seconds_bucket{le="2.0"}` | `payments_processed_total{outcome=~"completed\|rejected"}` |
-| **Valid events** | `payment_e2e_latency_seconds_count` | good + `payments_dead_lettered_total{kind="exhausted"}` |
+| **Valid events** | `payments_accepted_total` (counted at the gateway on every 202, not at completion, so a stalled backlog counts as late right away; see the [DB-latency postmortem](../postmortems/2026-11-20-db-latency.md)) | good + `payments_dead_lettered_total{kind="exhausted"}` |
 | **SLO (28 days)** | **99%** | **99.9%** |
 | **Error budget** | 1% ≈ 6.7 h of total failure, or 1 in 100 payments slow | 0.1%, 1 in 1,000 payments stuck |
 

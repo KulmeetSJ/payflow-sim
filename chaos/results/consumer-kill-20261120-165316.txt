@@ -1,0 +1,12 @@
+11:23:17 # consumer kill: payflow-sim-payment-processor-3, load 50/s
+11:23:18 ownership before: /172.20.0.14=2 /172.20.0.15=2 /172.20.0.16=2 
+11:23:18 load: 50/s for 240s (run consumer-kill-165318)
+11:24:19 KILLED payflow-sim-payment-processor-3 (SIGKILL)
+11:25:09 orphaned partitions reassigned 49s after the kill; ownership now: /172.20.0.14=3 /172.20.0.15=3 
+11:25:30 lag peaked at ~800 (kafka-exporter, scraped every 10 s), back under 25 71s after the kill
+11:25:44 payflow-sim-payment-processor-3 restarted, got partitions back 11s later (JVM start + join); ownership: /172.20.0.14=2 /172.20.0.15=2 /172.20.0.16=2 
+11:27:28 reconcile: k6 got 202 for 12000, non-2xx/errors 0; payment rows for the run 12000 (lag drained 5s after load stopped)
+11:27:28 reconcile: lost 0, total balance 100000000.00 (expected 100000000.00), ledger debits 21790062.30 = credits 21790062.30
+11:27:28 redeliveries absorbed by dedupe during the run: 0
+11:27:28 saved to chaos/results/consumer-kill-20261120-165316.txt
+# note: the script polls logs every ~2-3 s, so 49 s is an upper bound; the earlier (discarded) run's log timeline showed 46.0 s (kill 11:19:32.4 -> 'partitions assigned' 11:20:18.45), i.e. session.timeout.ms 45 s + one heartbeat.

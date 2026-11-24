@@ -112,6 +112,7 @@ services:
       OTEL_SERVICE_NAME: payment-processor
       DB_URL: jdbc:postgresql://postgres:5432/payflow
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY:-1}   # consumer threads per instance
       ADMIN_ENDPOINTS_ENABLED: "true"   # DLT inspector + fault injection (local demo only)
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError   # 7 instances must fit on a laptop
     depends_on:

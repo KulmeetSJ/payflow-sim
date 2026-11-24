@@ -14,6 +14,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -55,6 +56,9 @@ class GatewayIT {
 	@Autowired
 	KafkaContainer kafka;
 
+	@Autowired
+	MeterRegistry meters;
+
 	static final String BODY = """
 			{"fromAccount":"ACC-000003","toAccount":"ACC-000006","amount":12.50,"currency":"GBP"}""";
 
@@ -87,7 +91,9 @@ class GatewayIT {
 	@Test
 	void acceptedPaymentIsOnTheTopicKeyedByFromAccount() throws Exception {
 		var key = "gw-" + UUID.randomUUID();
+		double acceptedBefore = meters.counter("payments.accepted").count();
 		var resp = json.readTree(postPayment(key, BODY, 202));
+		assertThat(meters.counter("payments.accepted").count()).isEqualTo(acceptedBefore + 1);
 		var paymentId = UUID.fromString(resp.get("paymentId").asString());
 		assertThat(paymentId).isEqualTo(PaymentInitiated.eventIdFor(key));
 

@@ -1,0 +1,37 @@
+11:28:14 # DB latency: +500ms on PostgreSQL responses, load 20/s, 3 processors
+11:28:14 load: 20/s for 100000s (run db-latency-165814)
+11:30:15 baseline: committed 19.9601/s, gateway 202s 19.9800/s p99 0.0168s, burn 5m=0.0000x 1h=0.0000x, alert=inactive
+11:30:15 TOXIC ON: +500ms
+11:31:16   +61s: committed 0.7400/s, lag 1194, gateway 202s 19.9800/s p99 0.0126s
+11:32:17   +122s: committed 0.7600/s, lag 2352, gateway 202s 20.0188/s p99 0.0190s
+11:33:18   +183s: committed 0.7800/s, lag 3518, gateway 202s 20.0192/s p99 0.0335s
+11:34:19   +243s: committed 0.7400/s, lag 4672, gateway 202s 19.9992/s p99 0.0161s
+11:35:20   +304s: committed 0.7400/s, lag 5871, gateway 202s 20.0204/s p99 0.0671s
+11:36:21   +365s: committed 0.7200/s, lag 7021, gateway 202s 19.9992/s p99 0.0224s
+11:37:22   +426s: committed 0.7400/s, lag 8121, gateway 202s 20.0192/s p99 0.0118s
+11:38:22   +487s: committed 0.7200/s, lag 9321, gateway 202s 20.0000/s p99 0.0119s
+11:39:23   +548s: committed 0.7400/s, lag 10521, gateway 202s 20.0000/s p99 0.0140s
+11:39:38   alert pending after 563s (burn 5m=100.0000x 1h=14.5191x)
+11:40:24   +609s: committed 0.7400/s, lag 11571, gateway 202s 19.9800/s p99 0.0140s
+11:42:21   +725s: committed 0.7400/s, lag 11771, gateway 202s 19.9980/s p99 0.0895s
+11:52:05 before the fix: committed 0.4863/s, lag 13359, gateway 202s 12.6142/s p99 0.7530s; firing: PaymentLatencyBudgetSlowBurn
+11:52:05 processor log lines mentioning max.poll / rebalance / Hikari timeouts: 6
+11:52:05 TOXIC OFF after 1310s
+11:53:03   backlog drained 58s after the fix (peak catch-up rate ~287/s)
+11:57:52   PaymentLatencyBudgetFastBurn resolved 346s after the fix (burn 5m=0.0000x 1h=63.6100x)
+11:57:52   latency error budget left (28d): -62.6100
+11:58:06 reconcile: k6 got 202 for 23267, non-2xx/errors 0; payment rows for the run 23267 (lag drained 10s after load stopped)
+11:58:06 reconcile: lost 0, total balance 100000000.00 (expected 100000000.00), ledger debits 23370586.29 = credits 23370586.29
+11:58:06 saved to chaos/results/db-latency-20261120-165814.txt
+# notes, added from Prometheus history and `pmset -g log` after the run
+# - The laptop went into clamshell sleep at 11:40:32 UTC (lid closed, on battery) and woke ~11:51.
+#   Everything after "+609s" above is distorted by that: the script, k6, Prometheus and the containers all
+#   paused. Valid part: 0.74 payments/s committed under +500 ms (from ~20/s), gateway unaffected
+#   (20 x 202/s, p99 12-67 ms), lag +19/s, FastBurn PENDING only after 563 s.
+# - Why so slow with burn 5m = 100x: the latency SLI's denominator was completed payments. Completions
+#   fell to 0.74/s, so the backlog (10,000+ accepted, unprocessed payments) was invisible to the SLI.
+#   The 1h ratio crawled up 1.5 points/min and only crossed 14.4% because this Prometheus had just 2 min
+#   of history. With a full hour of healthy history the 1h window needs ~49 min to cross (page ~51 min).
+# - Prometheus ALERTS: FastBurn firing from 11:43:30 (13m15s after the toxic, during the sleep), SlowBurn
+#   firing from 11:51:30. Catch-up after the toxic was removed: ~287 payments/s, 13,359 backlog in 58 s.
+# - Reconcile is valid regardless: 23,267 x 202, 23,267 payment rows, 0 lost, money conserved.

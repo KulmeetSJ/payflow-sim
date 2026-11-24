@@ -1,0 +1,21 @@
+11:13:55 # broker kill: kafka-2, load 50/s, 3 processors
+11:13:58 partition leaders (count x broker id):  2 1 2 2 2 3 
+11:13:58 load: 50/s for 240s (run broker-kill-164358)
+11:14:58 before: gateway p99 0.0123s, e2e p99 0.0169s
+11:14:58 KILLED kafka-2
+11:15:16 leaders after kill:  2 1 4 3 ; under-replicated partitions (all topics): 80
+11:16:01 during (worst 30s window): gateway p99 9.8385s, e2e p99 9.9642s, lag max 1.0000
+11:16:02 RESTARTED kafka-2 after 64s down
+11:16:09 kafka-2 back in every ISR 5s after restart (under-replicated partitions: 0)
+11:16:10 leaders now:  2 1 4 3  (auto.leader.rebalance.enable moves leadership back within ~5 min)
+11:18:02 reconcile: k6 got 202 for 11631, non-2xx/errors 72; payment rows for the run 11631 (lag drained 0s after load stopped)
+11:18:02 reconcile: lost 0, total balance 100000000.00 (expected 100000000.00), ledger debits 20157623.37 = credits 20157623.37
+11:18:02 processor errors logged during the run: 0
+11:18:02 saved to chaos/results/broker-kill-20261120-164355.txt
+# notes (from the broker and gateway logs)
+# - kill at 11:14:58.4; leaders of kafka-2's partitions moved at 11:15:08.5: 10.0 s with no leader for
+#   those partitions. A SIGKILLed broker is only noticed when its controller heartbeats stop
+#   (broker.session.timeout.ms, 9 s default); a clean `docker stop` would hand leadership over immediately.
+# - 72 sends to partitions 1 and 3 hit the gateway's delivery.timeout.ms (10 s) -> 503, not 202.
+#   Correct behaviour (nothing was acknowledged that wasn't durable), but the timeout is too close to
+#   the failover time. 297 k6 iterations were dropped because 200 VUs were all blocked on those sends.

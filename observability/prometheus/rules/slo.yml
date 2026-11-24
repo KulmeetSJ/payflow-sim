@@ -5,20 +5,26 @@
 # once the problem is fixed.
 #
 # Latency SLO: 99% of payments committed within 2 s of acceptance -> error budget 1%
+#   good  = committed within 2 s (processor histogram, le="2.0" bucket)
+#   valid = ACCEPTED by the gateway (payments_accepted_total), not "completed". With completions as the
+#           denominator, a processing stall hides itself: the backlog isn't counted until it drains, and
+#           in the 2026-11-20 DB-latency chaos test the page would have needed hours to fire
+#           (postmortems/2026-11-20-db-latency.md). In steady state both rates are equal; clamp_min
+#           absorbs scrape-timing noise that could push the ratio a hair below 0.
 # Success SLO: 99.9% of valid payments processed without being dead-lettered -> budget 0.1%
 groups:
   - name: slo-latency-sli
     rules:
       - record: slo:payment_latency:error_ratio_rate5m
-        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[5m])) / sum(rate(payment_e2e_latency_seconds_count[5m])))
+        expr: clamp_min(1 - sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[5m])) / sum(rate(payments_accepted_total[5m])), 0)
       - record: slo:payment_latency:error_ratio_rate30m
-        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[30m])) / sum(rate(payment_e2e_latency_seconds_count[30m])))
+        expr: clamp_min(1 - sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[30m])) / sum(rate(payments_accepted_total[30m])), 0)
       - record: slo:payment_latency:error_ratio_rate1h
-        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[1h])) / sum(rate(payment_e2e_latency_seconds_count[1h])))
+        expr: clamp_min(1 - sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[1h])) / sum(rate(payments_accepted_total[1h])), 0)
       - record: slo:payment_latency:error_ratio_rate6h
-        expr: 1 - (sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[6h])) / sum(rate(payment_e2e_latency_seconds_count[6h])))
+        expr: clamp_min(1 - sum(rate(payment_e2e_latency_seconds_bucket{le="2.0"}[6h])) / sum(rate(payments_accepted_total[6h])), 0)
       - record: slo:payment_latency:error_ratio_rate28d
-        expr: 1 - (sum(increase(payment_e2e_latency_seconds_bucket{le="2.0"}[28d])) / sum(increase(payment_e2e_latency_seconds_count[28d])))
+        expr: clamp_min(1 - sum(increase(payment_e2e_latency_seconds_bucket{le="2.0"}[28d])) / sum(increase(payments_accepted_total[28d])), 0)
       - record: slo:payment_latency:error_budget_remaining
         expr: 1 - slo:payment_latency:error_ratio_rate28d / 0.01
 

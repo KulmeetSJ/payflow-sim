@@ -1,6 +1,8 @@
 package dev.demo.payflow.gateway;
 
 import dev.demo.payflow.events.PaymentInitiated;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
 import java.time.Clock;
@@ -24,9 +26,19 @@ class PaymentController {
 
 	private final Clock clock;
 
-	PaymentController(PaymentPublisher publisher, Clock clock) {
+	/**
+	 * Denominator of the latency SLI ("99% of ACCEPTED payments committed within 2 s"). Counting at
+	 * acceptance, not at completion, keeps the SLI honest when processing stalls: payments stuck in
+	 * the backlog count as late as soon as they are, not hours later when they finally complete.
+	 */
+	private final Counter accepted;
+
+	PaymentController(PaymentPublisher publisher, Clock clock, MeterRegistry registry) {
 		this.publisher = publisher;
 		this.clock = clock;
+		this.accepted = Counter.builder("payments.accepted")
+			.description("Payments durably accepted (202), including client retries of the same Idempotency-Key")
+			.register(registry);
 	}
 
 	/**
@@ -41,6 +53,7 @@ class PaymentController {
 		var event = PaymentInitiated.of(idempotencyKey, req.fromAccount(), req.toAccount(), req.amount(),
 				req.currency(), Instant.now(clock));
 		publisher.publish(event);
+		accepted.increment();
 		return ResponseEntity.status(HttpStatus.ACCEPTED).body(new Accepted(event.eventId(), "ACCEPTED"));
 	}
 

@@ -1,0 +1,19 @@
+# Overlay for chaos/db-latency.sh: the processors reach PostgreSQL through Toxiproxy, so latency can be
+# injected on that one link without touching the database or the gateway.
+#   docker compose -f docker-compose.yml -f chaos/compose.toxiproxy.yml up -d --scale payment-processor=3
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    restart: unless-stopped
+    mem_limit: 64m
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes: ["./chaos/toxiproxy.json:/config/toxiproxy.json:ro"]
+    ports: ["8474:8474"]   # control API
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  payment-processor:
+    environment:
+      DB_URL: jdbc:postgresql://toxiproxy:15432/payflow
+    depends_on:
+      toxiproxy: { condition: service_started }

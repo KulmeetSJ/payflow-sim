@@ -1,5 +1,5 @@
 # promtool test rules tests/slo_test.yml  (run in CI)
-# Synthetic traffic: 100 payments/min. "bad" = committed later than 2 s, or dead-lettered.
+# Synthetic traffic: 100 payments/min accepted. "bad" = not committed within 2 s, or dead-lettered.
 rule_files: [../rules/slo.yml]
 evaluation_interval: 1m
 
@@ -7,7 +7,7 @@ tests:
   # 1% slow payments = exactly the budget, burn rate 1x: nothing fires
   - interval: 1m
     input_series:
-      - series: payment_e2e_latency_seconds_count
+      - series: payments_accepted_total
         values: 0+100x400
       - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
         values: 0+99x400
@@ -18,7 +18,7 @@ tests:
   # 30% slow from the start (burn 30x): page after the 2 m "for"
   - interval: 1m
     input_series:
-      - series: payment_e2e_latency_seconds_count
+      - series: payments_accepted_total
         values: 0+100x60
       - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
         values: 0+70x60
@@ -35,7 +35,7 @@ tests:
   # 8% slow (burn 8x): above the ticket threshold, below the page threshold
   - interval: 1m
     input_series:
-      - series: payment_e2e_latency_seconds_count
+      - series: payments_accepted_total
         values: 0+100x120
       - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
         values: 0+92x120
@@ -53,7 +53,7 @@ tests:
   # recovered, so the page clears quickly (this is why there are two windows).
   - interval: 1m
     input_series:
-      - series: payment_e2e_latency_seconds_count
+      - series: payments_accepted_total
         values: 0+100x60
       - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
         values: 0+70x30 2100+100x30
@@ -66,6 +66,26 @@ tests:
               summary: Payment latency SLO is burning its error budget at more than 14.4x
               runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
       - { eval_time: 40m, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }
+
+  # Processing stall (the 2026-11-20 DB-latency incident): 2 h of clean traffic, then completions drop
+  # to 4/min, all late, while the gateway keeps accepting 100/min. Counting accepted payments, the
+  # 1h window crosses 14.4% after ~9 min and the page fires ~2 min later. (With completions as the
+  # denominator the 1h ratio would stay under 14.4% for hours: only 4/min would ever count as bad.)
+  - interval: 1m
+    input_series:
+      - series: payments_accepted_total
+        values: 0+100x180
+      - series: 'payment_e2e_latency_seconds_bucket{le="2.0"}'
+        values: 0+100x120 12000+0x60
+    alert_rule_test:
+      - { eval_time: 128m, alertname: PaymentLatencyBudgetFastBurn, exp_alerts: [] }
+      - eval_time: 135m
+        alertname: PaymentLatencyBudgetFastBurn
+        exp_alerts:
+          - exp_labels: { severity: page, slo: payment-latency }
+            exp_annotations:
+              summary: Payment latency SLO is burning its error budget at more than 14.4x
+              runbook_url: https://github.com/KulmeetSJ/payflow-sim/blob/main/docs/slo.md#responding-to-alerts
 
   # 2 of every 102 valid payments dead-lettered (~2%, burn ~20x vs a 0.1% budget): page.
   # Poison messages do not count against the success SLO; they raise a separate ticket.

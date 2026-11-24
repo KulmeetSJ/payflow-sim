@@ -2,7 +2,6 @@ package dev.demo.payflow.processor;
 
 import dev.demo.payflow.events.PaymentInitiated;
 import java.sql.Timestamp;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
@@ -29,6 +28,10 @@ class PaymentService {
 	/**
 	 * One transaction: dedupe marker + payment row + ledger + balances. Either all of it commits or
 	 * none of it does; the Kafka offset is committed only after this method returns.
+	 *
+	 * <p>3 statements + COMMIT = 4 round trips to PostgreSQL (was 7 + COMMIT before the
+	 * 2026-11-20 DB-latency postmortem): every round trip is paid again whenever the network or the
+	 * database is slow, on a thread that is the only consumer of its partitions.
 	 */
 	@Transactional
 	Outcome process(PaymentInitiated p, int partition, long offset, int attempt) {
@@ -52,24 +55,47 @@ class PaymentService {
 			.collect(Collectors.toMap(Account::accountId, Function.identity()));
 
 		Optional<String> reject = PaymentRules.check(p, accounts.get(p.fromAccount()), accounts.get(p.toAccount()));
-		insertPayment(p, reject.isPresent() ? "REJECTED" : "COMPLETED", reject.orElse(null), partition, offset, attempt);
 		if (reject.isPresent()) {
+			insertPayment(p, "REJECTED", reject.get(), partition, offset, attempt);
 			log.info("payment {} rejected: {}", p.eventId(), reject.get());
 			return Outcome.REJECTED;
 		}
 
-		for (var e : List.of(new Object[] { p.fromAccount(), "DEBIT" }, new Object[] { p.toAccount(), "CREDIT" })) {
-			db.sql("INSERT INTO ledger_entries (payment_id, account_id, direction, amount) VALUES (?, ?, ?, ?)")
-				.params(p.eventId(), e[0], e[1], p.amount())
-				.update();
-		}
-		db.sql("UPDATE accounts SET balance = balance - ?, updated_at = now() WHERE account_id = ?")
-			.params(p.amount(), p.fromAccount())
-			.update();
-		db.sql("UPDATE accounts SET balance = balance + ?, updated_at = now() WHERE account_id = ?")
-			.params(p.amount(), p.toAccount())
-			.update();
+		book(p, partition, offset, attempt);
 		return Outcome.COMPLETED;
+	}
+
+	/** Payment row, both ledger entries and both balance updates in ONE statement (data-modifying CTEs). */
+	private void book(PaymentInitiated p, int partition, long offset, int attempt) {
+		int updated = db.sql("""
+				WITH payment AS (
+				    INSERT INTO payments (payment_id, idempotency_key, from_account, to_account, amount, currency,
+				                          status, accepted_at, kafka_partition, kafka_offset, delivery_attempt)
+				    VALUES (:id, :key, :from, :to, :amount, :ccy, 'COMPLETED', :acceptedAt, :partition, :offset, :attempt)
+				), ledger AS (
+				    INSERT INTO ledger_entries (payment_id, account_id, direction, amount)
+				    VALUES (:id, :from, 'DEBIT', :amount), (:id, :to, 'CREDIT', :amount)
+				)
+				UPDATE accounts
+				   SET balance = balance + CASE WHEN account_id = :from THEN -CAST(:amount AS NUMERIC)
+				                                ELSE CAST(:amount AS NUMERIC) END,
+				       updated_at = now()
+				 WHERE account_id IN (:from, :to)
+				""")
+			.param("id", p.eventId())
+			.param("key", p.idempotencyKey())
+			.param("from", p.fromAccount())
+			.param("to", p.toAccount())
+			.param("amount", p.amount())
+			.param("ccy", p.currency())
+			.param("acceptedAt", Timestamp.from(p.acceptedAt()))
+			.param("partition", partition)
+			.param("offset", offset)
+			.param("attempt", attempt)
+			.update();
+		if (updated != 2) { // both rows are locked FOR UPDATE above, so this would be a bug, not a race
+			throw new IllegalStateException("expected 2 balance updates for " + p.eventId() + ", got " + updated);
+		}
 	}
 
 	private void insertPayment(PaymentInitiated p, String status, String reason, int partition, long offset,

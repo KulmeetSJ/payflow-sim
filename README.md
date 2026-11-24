@@ -143,11 +143,12 @@ flowchart LR
   + 12.4 ms   0.2 ms  payment-processor  client    INSERT payflow.payments
   ...                                              2 ledger INSERTs, 2 balance UPDATEs
   ```
+  (Recorded in Phase 3. Since Phase 4 the payment row, both ledger entries and both balance updates are one statement, so a payment costs 4 DB round trips instead of 8; see the [DB-latency postmortem](postmortems/2026-11-20-db-latency.md).)
   A retried payment shows each attempt: three in-place tries ~0.5 s apart, the hop to `payments.initiated-retry-1000`, and the successful commit at 2.17 s ([full trace](demos/output/)).
 - **Logs:** JSON on stdout (Spring Boot structured logging, ECS) with `trace_id`/`span_id`, and also shipped via OTLP to Loki. Grafana links each log line to its trace and each span to its logs.
-- **SLI metrics** ([`PaymentMetrics`](payment-processor/src/main/java/dev/demo/payflow/processor/PaymentMetrics.java)): `payments_processed_total{outcome}`, `payment_e2e_latency_seconds` (accept → commit, with an exact 2 s bucket), `payments_dead_lettered_total{kind}`. Consumer lag comes from kafka-exporter on the broker side, so it still reports when every consumer is down.
+- **SLI metrics** ([`PaymentMetrics`](payment-processor/src/main/java/dev/demo/payflow/processor/PaymentMetrics.java)): `payments_accepted_total` (gateway, the latency SLI denominator), `payments_processed_total{outcome}`, `payment_e2e_latency_seconds` (accept → commit, with an exact 2 s bucket), `payments_dead_lettered_total{kind}`. Consumer lag comes from kafka-exporter on the broker side, so it still reports when every consumer is down.
 - **SLOs** ([docs/slo.md](docs/slo.md)): 99% of payments committed within 2 s; 99.9% of valid payments processed without being dead-lettered. Multi-window, multi-burn-rate alerts: **page** at 14.4× over 1 h and 5 m, **ticket** at 6× over 6 h and 30 m. The design choices, error budget policy and alert response steps are in the doc.
-- **Alert rules are tested code.** `promtool test rules` runs in CI with 6 scenarios: exactly-on-budget traffic stays quiet, a 30× burn pages, an 8× burn only raises a ticket, a spike that has ended clears the page within minutes, dead letters page the success SLO, and poison messages raise only their own ticket.
+- **Alert rules are tested code.** `promtool test rules` runs in CI with 7 scenarios: exactly-on-budget traffic stays quiet, a 30× burn pages, an 8× burn only raises a ticket, a spike that has ended clears the page within minutes, dead letters page the success SLO, poison messages raise only their own ticket, and a processing stall (completions collapse while the gateway keeps accepting) pages within ~11 min.
 
 ### Forced error spike → page ([`demos/slo-burn.sh`](demos/slo-burn.sh), [output](demos/output/))
 | | Result |
@@ -159,9 +160,21 @@ flowchart LR
 | Resolved | 324 s after the fault was switched off, once the 5 m window had recovered |
 
 Notes from the runs:
-- **The burn rate hit ~40×, not the ~22× I predicted.** I expected only the ~22% of payments that fail all three in-place tries (0.6³) to miss the 2 s target. But in-place retries hold the partition, and with one listener thread for 6 partitions, throughput fell to a few payments per second against 20/s offered. Lag grew to ~400 per partition and *every* queued payment went slow. Head-of-line blocking was the real damage, and it is the cost of the order-preserving retry layer. It is also why Phase 4 will measure listener concurrency.
+- **The burn rate hit ~40×, not the ~22× I predicted.** I expected only the ~22% of payments that fail all three in-place tries (0.6³) to miss the 2 s target. But in-place retries hold the partition, and with one listener thread for 6 partitions, throughput fell to a few payments per second against 20/s offered. Lag grew to ~400 per partition and *every* queued payment went slow. Head-of-line blocking was the real damage, and it is the cost of the order-preserving retry layer. Listener threads per instance are now configurable (`LISTENER_CONCURRENCY`, default 1, capped in effect by the 6 partitions), but I haven't benchmarked them yet.
 - **The long window wasn't clean in the recorded run.** Docker Compose kept Prometheus' anonymous data volume when I recreated the container, so the 1 h window still held an earlier run's spike (1 h burn 28.7× at the end of the baseline), and the 5 m window was what triggered the alert. An earlier run with a clean 1 h window gave almost the same timings (pending 96 s, firing 217 s), because on a stack with only minutes of history the 1 h window behaves like a short one.
 - **"Error budget left: −3208%"** is correct and a little absurd: with ~25 minutes of history, a 4-minute incident is most of the traffic the 28-day window has seen. Budgets only mean something over real traffic volumes, and that's a good reason not to page on them directly.
+
+## Load and chaos ([RESULTS.md](RESULTS.md))
+k6 at a fixed arrival rate against the gateway, plus three scripted chaos experiments, each with a hypothesis. After every run, every 202 is reconciled against the database: each one must be exactly one payment row, and money must be conserved.
+
+| Test | Result | Payments lost |
+|---|---|---|
+| Load knee, 3 processors | **750–1,000/s**: e2e p99 0.50 s at 750/s; lag starts growing at 1,000/s | — |
+| Kill 1 of 3 brokers | 10 s leaderless; 72 requests got 503 (refused, never acknowledged) | **0** / 11,631 |
+| Kill 1 of 3 consumers | partitions reassigned after 46 s (session timeout); lag recovered in 71 s | **0** / 12,000 |
+| +500 ms on PostgreSQL | gateway unaffected; throughput 20 → 1.5/s; **page in 11.3 min** | **0** / 92,097 |
+
+**Postmortem: [a slow database stalled payments and the page took ~51 minutes](postmortems/2026-11-20-db-latency.md).** The latency SLI's denominator was *completed* payments, so a stalled backlog didn't count against the SLO. I switched it to *accepted* payments and cut the DB round trips per payment from 8 to 4. On the re-run, the same fault paged in **11.3 min** after a full hour of healthy history, and throughput under the fault doubled. The stall is now a `promtool` test in CI.
 
 ## Tests
 `./mvnw verify` runs unit tests and integration tests against **real Kafka and PostgreSQL** (Testcontainers):
@@ -169,13 +182,13 @@ Notes from the runs:
 - **Processor:** a valid payment gets a balanced ledger and moves both balances; a currency mismatch is `REJECTED` with no ledger entries; the same event delivered 3× is booked once; 20 payments from one account are committed in send order.
 - **Retries and DLT:** a fault that outlasts the blocking retries is booked from a retry topic exactly once; a permanent fault ends in the DLT after 4 attempts, then replay books it and a second replay changes nothing; malformed JSON and a tampered `eventId` reach the DLT on attempt 1 without blocking the partition.
 - **Rules:** a table of 10 business-rule cases.
-- **SLO alert rules:** 6 `promtool` scenarios (above).
+- **SLO alert rules:** 7 `promtool` scenarios (above).
 
 ## Roadmap
 - [x] **Phase 1:** core flow, 3-broker KRaft cluster, idempotent producer and consumer, Testcontainers, CI
 - [x] **Phase 2:** blocking + non-blocking retries, DLT with inspector and replay, consumer-group scaling demo (1→3→6→7→3), cooperative-sticky assignor
 - [x] **Phase 3:** OpenTelemetry traces across Kafka, JSON logs in Loki linked to traces, RED + lag + SLO dashboard, multi-window burn-rate alerts (tested with promtool)
-- [ ] **Phase 4:** k6 load test, chaos (broker kill, consumer kill, DB latency), blameless postmortem
+- [x] **Phase 4:** k6 load test, chaos (broker kill, consumer kill, DB latency), blameless postmortem; results in [RESULTS.md](RESULTS.md)
 
 ## License
 MIT
